@@ -1,0 +1,11 @@
+.vs/
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vsconfig
+
+
+*.sln
+*.dll
+*.exe
