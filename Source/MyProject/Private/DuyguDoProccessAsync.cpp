@@ -12,6 +12,20 @@ UDuyguDoProccessAsync* UDuyguDoProccessAsync::DuyguDoProcess(UObject* WorldConte
     return Proxy;
 }
 
+UDuyguDoProccessAsync* UDuyguDoProccessAsync::DuyguDoProcessFromPCM(UObject* WorldContextObject, const TArray<uint8>& PCMBytes, int32 SampleRate, int32 NumChannels, int32 BitsPerSample, const FString& ServerUrl)
+{
+    UDuyguDoProccessAsync* Proxy = NewObject<UDuyguDoProccessAsync>(WorldContextObject ? WorldContextObject : (UObject*)GetTransientPackage());
+    Proxy->WorldContextObject = WorldContextObject;
+    Proxy->AudioFilePath.Empty();
+    Proxy->ServerUrl = ServerUrl;
+    Proxy->PendingPCM = PCMBytes;
+    Proxy->PendingSampleRate = SampleRate;
+    Proxy->PendingNumChannels = NumChannels;
+    Proxy->PendingBitsPerSample = BitsPerSample;
+    Proxy->AddToRoot();
+    return Proxy;
+}
+
 void UDuyguDoProccessAsync::Activate()
 {
     InnerProcess = NewObject<UDuyguDoProccess>(this);
@@ -19,7 +33,14 @@ void UDuyguDoProccessAsync::Activate()
     {
         InnerProcess->OnCompleted.AddDynamic(this, &UDuyguDoProccessAsync::HandleCompleted);
         InnerProcess->OnAudioImported.AddDynamic(this, &UDuyguDoProccessAsync::HandleAudioImported);
-        InnerProcess->StartProcess(AudioFilePath, ServerUrl);
+        if (PendingPCM.Num() > 0 && PendingSampleRate > 0 && PendingNumChannels > 0)
+        {
+            InnerProcess->StartProcessFromPCM(PendingPCM, PendingSampleRate, PendingNumChannels, PendingBitsPerSample, ServerUrl);
+        }
+        else
+        {
+            InnerProcess->StartProcess(AudioFilePath, ServerUrl);
+        }
     }
     else
     {
@@ -37,11 +58,14 @@ void UDuyguDoProccessAsync::HandleCompleted(bool bSuccess, const FString& Messag
     {
         OnFailure.Broadcast(bSuccess, Message);
     }
-
-    RemoveFromRoot();
 }
 
 void UDuyguDoProccessAsync::HandleAudioImported(USoundWave* ImportedSound)
 {
+    // store so Blueprints can access
+    this->ImportedSound = ImportedSound;
     OnAudioImported.Broadcast(ImportedSound);
+
+    // complete lifecycle and allow GC
+    RemoveFromRoot();
 }

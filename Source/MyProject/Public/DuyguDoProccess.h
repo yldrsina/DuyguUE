@@ -10,6 +10,8 @@ class IHttpResponse;
 typedef TSharedPtr<IHttpRequest, ESPMode::ThreadSafe> FHttpRequestPtr;
 typedef TSharedPtr<IHttpResponse, ESPMode::ThreadSafe> FHttpResponsePtr;
 
+class USoundWave;
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FDuyguDoProccessCompleted, bool, bSuccess, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FDuyguAudioImported, USoundWave*, ImportedSound);
 
@@ -25,8 +27,17 @@ public:
     UPROPERTY(BlueprintAssignable)
     FDuyguAudioImported OnAudioImported;
 
+    UPROPERTY()
+    USoundWave* ImportedSound;
+
     UFUNCTION(BlueprintCallable)
     void StartProcess(const FString& AudioFilePath, const FString& ServerUrl = TEXT("http://127.0.0.1:5000/process"));
+
+    UFUNCTION(BlueprintCallable, Category="Duygu|Audio")
+    void StartProcessFromPCM(const TArray<uint8>& PCMBytes, int32 SampleRate, int32 NumChannels, int32 BitsPerSample = 16, const FString& ServerUrl = TEXT("http://127.0.0.1:5000/process"));
+
+    UFUNCTION(BlueprintCallable, Category="Duygu|Audio")
+    void StartProcessFromSoundWave(USoundWave* SoundWave, const FString& ServerUrl = TEXT("http://127.0.0.1:5000/process"));
 
 protected:
     void OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);

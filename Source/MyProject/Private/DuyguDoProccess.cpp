@@ -9,6 +9,7 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "Sound/SoundWave.h"
 #include "HAL/PlatformFilemanager.h"
+#include "Misc/ScopeLock.h"
 
 static FString GenerateBoundary()
 {
@@ -35,6 +36,7 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
     if (AudioFilePath.IsEmpty())
     {
         OnCompleted.Broadcast(false, TEXT("Empty audio file path"));
+        OnAudioImported.Broadcast(nullptr);
         return;
     }
 
@@ -42,6 +44,7 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
     if (!FFileHelper::LoadFileToArray(FileBytes, *AudioFilePath))
     {
         OnCompleted.Broadcast(false, FString::Printf(TEXT("Failed to read file: %s"), *AudioFilePath));
+        OnAudioImported.Broadcast(nullptr);
         return;
     }
 
@@ -59,6 +62,75 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
     if (!Request->ProcessRequest())
     {
         OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"));
+        OnAudioImported.Broadcast(nullptr);
+    }
+}
+
+static void AppendWavHeader(TArray<uint8>& OutWav, int32 PCMDataSize, int32 SampleRate, int32 NumChannels, int32 BitsPerSample)
+{
+    // RIFF header
+    int32 ByteRate = SampleRate * NumChannels * BitsPerSample / 8;
+    int16 BlockAlign = (int16)(NumChannels * BitsPerSample / 8);
+    int16 NumChannels16 = (int16)NumChannels;
+    int16 BitsPerSample16 = (int16)BitsPerSample;
+
+    // 'RIFF'
+    OutWav.Append((uint8*)"RIFF", 4);
+    int32 ChunkSize = 36 + PCMDataSize;
+    OutWav.Append((uint8*)&ChunkSize, 4);
+    OutWav.Append((uint8*)"WAVE", 4);
+
+    // fmt chunk
+    OutWav.Append((uint8*)"fmt ", 4);
+    int32 Subchunk1Size = 16;
+    OutWav.Append((uint8*)&Subchunk1Size, 4);
+    int16 AudioFormat = 1; // PCM
+    OutWav.Append((uint8*)&AudioFormat, 2);
+    OutWav.Append((uint8*)&NumChannels16, 2);
+    OutWav.Append((uint8*)&SampleRate, 4);
+    OutWav.Append((uint8*)&ByteRate, 4);
+    OutWav.Append((uint8*)&BlockAlign, 2);
+    OutWav.Append((uint8*)&BitsPerSample16, 2);
+
+    // data chunk
+    OutWav.Append((uint8*)"data", 4);
+    OutWav.Append((uint8*)&PCMDataSize, 4);
+}
+
+void UDuyguDoProccess::StartProcessFromPCM(const TArray<uint8>& PCMBytes, int32 SampleRate, int32 NumChannels, int32 BitsPerSample, const FString& InServerUrl)
+{
+    this->ServerUrl = InServerUrl;
+    this->AudioFilePath.Empty();
+
+    if (PCMBytes.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)
+    {
+        OnCompleted.Broadcast(false, TEXT("Invalid PCM data or parameters"));
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Build WAV bytes
+    TArray<uint8> WavData;
+    int32 PCMSize = PCMBytes.Num();
+    AppendWavHeader(WavData, PCMSize, SampleRate, NumChannels, BitsPerSample);
+    WavData.Append(PCMBytes);
+
+    // create multipart body and upload same as file-based StartProcess
+    FString Boundary = GenerateBoundary();
+    TArray<uint8> Body;
+    BuildMultipartFormData(TEXT("audio"), TEXT("recording.wav"), WavData, Boundary, Body);
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+    Request->SetURL(ServerUrl);
+    Request->SetVerb(TEXT("POST"));
+    Request->SetHeader(TEXT("Content-Type"), FString::Printf(TEXT("multipart/form-data; boundary=%s"), *Boundary));
+    Request->SetContent(Body);
+
+    Request->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnHttpResponseReceived);
+    if (!Request->ProcessRequest())
+    {
+        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"));
+        OnAudioImported.Broadcast(nullptr);
     }
 }
 
@@ -67,6 +139,7 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
     if (!bWasSuccessful || !Response.IsValid())
     {
         OnCompleted.Broadcast(false, TEXT("HTTP request failed or no response"));
+        OnAudioImported.Broadcast(nullptr);
         return;
     }
 
@@ -78,9 +151,10 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
         // Return the raw JSON string as the message so Blueprints can parse it
         OnCompleted.Broadcast(true, ResponseBody);
 
-        // Try to parse JSON and download audio_url if present
+        // Try to parse JSON and download audio_url if present. If none present, notify audio delegate with nullptr.
         TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseBody);
         TSharedPtr<FJsonObject> JsonObj;
+        bool bDispatchedAudio = false;
         if (FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid() && JsonObj->HasField(TEXT("audio_url")))
         {
             FString AudioUrl = JsonObj->GetStringField(TEXT("audio_url"));
@@ -92,12 +166,10 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
                 {
                     // Extract scheme+host+port from server URL
                     FString Scheme, Host, Path;
-                    int32 Port = 0;
                     if (ServerUrl.Split(TEXT("://"), &Scheme, &Path))
                     {
                         if (Path.Split(TEXT("/"), &Host, nullptr))
                         {
-                            // Host may still include path; remove path part
                             int32 SlashIndex;
                             if (Host.FindChar(TEXT('/'), SlashIndex))
                             {
@@ -114,13 +186,24 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
                 AudioRequest->SetURL(FullUrl);
                 AudioRequest->SetVerb(TEXT("GET"));
                 AudioRequest->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnAudioDownloaded);
-                AudioRequest->ProcessRequest();
+                if (AudioRequest->ProcessRequest())
+                {
+                    bDispatchedAudio = true;
+                }
             }
+        }
+
+        if (!bDispatchedAudio)
+        {
+            // No audio to download; notify listeners with nullptr so proxy can finish lifecycle.
+            ImportedSound = nullptr;
+            OnAudioImported.Broadcast(nullptr);
         }
     }
     else
     {
         OnCompleted.Broadcast(false, FString::Printf(TEXT("Server returned %d: %s"), Code, *ResponseBody));
+        OnAudioImported.Broadcast(nullptr);
     }
 }
 
@@ -139,19 +222,16 @@ void UDuyguDoProccess::OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponseP
 
     // Save to disk
     TArray<uint8> AudioBytes = Response->GetContent();
-    // FString Filename = FPaths::GetCleanFilename(Request->GetURL());
-    // if (Filename.IsEmpty())
-    // {
-    //     Filename = FString::Printf(TEXT("duygu_response_%lld.wav"), FDateTime::Now().ToUnixTimestamp());
-    // }
+    FString Filename = FPaths::GetCleanFilename(Request->GetURL());
+    if (Filename.IsEmpty())
+    {
+        Filename = FString::Printf(TEXT("duygu_response_%lld.wav"), FDateTime::Now().ToUnixTimestamp());
+    }
 
-    // FString SaveDir = FPaths::ProjectSavedDir() / TEXT("DuyguDownloads");
-    // IFileManager::Get().MakeDirectory(*SaveDir, true);
-    // FString LocalPath = SaveDir / Filename;
-    // if (!FFileHelper::SaveArrayToFile(AudioBytes, *LocalPath))
-    // {
-    //     return;
-    // }
+    FString SaveDir = FPaths::ProjectSavedDir() / TEXT("DuyguDownloads");
+    IFileManager::Get().MakeDirectory(*SaveDir, true);
+    FString LocalPath = SaveDir / Filename;
+    FFileHelper::SaveArrayToFile(AudioBytes, *LocalPath);
 
     // Try to parse WAV headers and create a SoundWaveProcedural
     USoundWaveProcedural* SW = nullptr;
@@ -195,7 +275,7 @@ void UDuyguDoProccess::OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponseP
             TArray<uint8> PCM;
             PCM.Append(AudioBytes.GetData() + DataStart, DataSize);
 
-            SW = NewObject<USoundWaveProcedural>(GetTransientPackage(), NAME_None, RF_Public | RF_Standalone);
+            SW = NewObject<USoundWaveProcedural>(this, NAME_None, RF_Public | RF_Standalone);
             if (SW)
             {
                 SW->SetSampleRate(SampleRate);
@@ -206,7 +286,8 @@ void UDuyguDoProccess::OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponseP
         }
     }
 
-    // Broadcast imported audio (may be null if parse failed) with the created SoundWave or nullptr
-    OnAudioImported.Broadcast(SW);
+    // Store and broadcast imported audio (may be null if parse failed)
+    ImportedSound = SW;
+    OnAudioImported.Broadcast(ImportedSound);
 }
 
