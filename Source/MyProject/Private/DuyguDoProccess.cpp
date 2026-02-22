@@ -9,7 +9,12 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "Sound/SoundWave.h"
 #include "HAL/PlatformFilemanager.h"
-#include "Misc/ScopeLock.h"
+#include "AudioDevice.h"
+#include "Engine/Engine.h"
+
+#if WITH_EDITORONLY_DATA
+#include "EditorFramework/AssetImportData.h"
+#endif
 
 static FString GenerateBoundary()
 {
@@ -35,7 +40,7 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
 
     if (AudioFilePath.IsEmpty())
     {
-        OnCompleted.Broadcast(false, TEXT("Empty audio file path"));
+        OnCompleted.Broadcast(false, TEXT("Empty audio file path"), nullptr);
         OnAudioImported.Broadcast(nullptr);
         return;
     }
@@ -43,7 +48,7 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
     TArray<uint8> FileBytes;
     if (!FFileHelper::LoadFileToArray(FileBytes, *AudioFilePath))
     {
-        OnCompleted.Broadcast(false, FString::Printf(TEXT("Failed to read file: %s"), *AudioFilePath));
+        OnCompleted.Broadcast(false, FString::Printf(TEXT("Failed to read file: %s"), *AudioFilePath), nullptr);
         OnAudioImported.Broadcast(nullptr);
         return;
     }
@@ -61,7 +66,7 @@ void UDuyguDoProccess::StartProcess(const FString& InAudioFilePath, const FStrin
     Request->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnHttpResponseReceived);
     if (!Request->ProcessRequest())
     {
-        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"));
+        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"), nullptr);
         OnAudioImported.Broadcast(nullptr);
     }
 }
@@ -104,7 +109,7 @@ void UDuyguDoProccess::StartProcessFromPCM(const TArray<uint8>& PCMBytes, int32 
 
     if (PCMBytes.Num() == 0 || SampleRate <= 0 || NumChannels <= 0)
     {
-        OnCompleted.Broadcast(false, TEXT("Invalid PCM data or parameters"));
+        OnCompleted.Broadcast(false, TEXT("Invalid PCM data or parameters"), nullptr);
         OnAudioImported.Broadcast(nullptr);
         return;
     }
@@ -129,7 +134,122 @@ void UDuyguDoProccess::StartProcessFromPCM(const TArray<uint8>& PCMBytes, int32 
     Request->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnHttpResponseReceived);
     if (!Request->ProcessRequest())
     {
-        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"));
+        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+    }
+}
+
+void UDuyguDoProccess::StartProcessFromSoundWave(USoundWave* SoundWave, const FString& InServerUrl)
+{
+    this->ServerUrl = InServerUrl;
+    this->AudioFilePath.Empty();
+
+    if (!SoundWave)
+    {
+        OnCompleted.Broadcast(false, TEXT("Invalid SoundWave"), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Get audio format info
+    int32 SampleRate = SoundWave->GetSampleRateForCurrentPlatform();
+    int32 NumChannels = SoundWave->NumChannels;
+    
+    if (SampleRate <= 0 || NumChannels <= 0)
+    {
+        OnCompleted.Broadcast(false, TEXT("Invalid SoundWave parameters"), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Extract PCM data from SoundWave
+    TArray<uint8> PCMData;
+    
+    // Method 1: Check if already cached in RawPCMData
+    if (SoundWave->RawPCMData && SoundWave->RawPCMDataSize > 0)
+    {
+        PCMData.Append(static_cast<const uint8*>(SoundWave->RawPCMData), SoundWave->RawPCMDataSize);
+    }
+    else
+    {
+        // Method 2: Try to load and cache the PCM data
+        // Force the sound to cache its PCM data
+        FAudioDevice* AudioDevice = GEngine ? GEngine->GetMainAudioDeviceRaw() : nullptr;
+        if (AudioDevice)
+        {
+            // Initialize audio resources to decompress
+            SoundWave->InitAudioResource(SoundWave->GetRuntimeFormat());
+            
+            // Try again after initialization
+            if (SoundWave->RawPCMData && SoundWave->RawPCMDataSize > 0)
+            {
+                PCMData.Append(static_cast<const uint8*>(SoundWave->RawPCMData), SoundWave->RawPCMDataSize);
+            }
+        }
+    }
+    
+    // If still no data, try to get it from the source asset (Editor only)
+#if WITH_EDITORONLY_DATA
+    if (PCMData.Num() == 0)
+    {
+        // Try to get the source file path
+        if (SoundWave->AssetImportData && SoundWave->AssetImportData->GetSourceData().SourceFiles.Num() > 0)
+        {
+            FString SourceFilePath = SoundWave->AssetImportData->GetSourceData().SourceFiles[0].RelativeFilename;
+            
+            // Try to load the original file
+            TArray<uint8> FileData;
+            if (FFileHelper::LoadFileToArray(FileData, *SourceFilePath))
+            {
+                // Use the file directly instead of extracting PCM
+                FString Boundary = GenerateBoundary();
+                TArray<uint8> Body;
+                BuildMultipartFormData(TEXT("audio"), FPaths::GetCleanFilename(SourceFilePath), FileData, Boundary, Body);
+
+                TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+                Request->SetURL(ServerUrl);
+                Request->SetVerb(TEXT("POST"));
+                Request->SetHeader(TEXT("Content-Type"), FString::Printf(TEXT("multipart/form-data; boundary=%s"), *Boundary));
+                Request->SetContent(Body);
+
+                Request->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnHttpResponseReceived);
+                if (Request->ProcessRequest())
+                {
+                    return; // Success, request started
+                }
+            }
+        }
+    }
+#endif
+
+    if (PCMData.Num() == 0)
+    {
+        OnCompleted.Broadcast(false, TEXT("Could not extract audio data from SoundWave. Try:\n1. Set 'Loading Behavior' to 'Retain Audio Data' in Sound properties\n2. Or use DuyguDoProcessFromPCM with raw audio bytes\n3. Or use DuyguDoProcess with file path"), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Build WAV file from PCM data
+    TArray<uint8> WavData;
+    const int32 BitsPerSample = 16;
+    AppendWavHeader(WavData, PCMData.Num(), SampleRate, NumChannels, BitsPerSample);
+    WavData.Append(PCMData);
+
+    // Create multipart body and upload
+    FString Boundary = GenerateBoundary();
+    TArray<uint8> Body;
+    BuildMultipartFormData(TEXT("audio"), TEXT("input.wav"), WavData, Boundary, Body);
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+    Request->SetURL(ServerUrl);
+    Request->SetVerb(TEXT("POST"));
+    Request->SetHeader(TEXT("Content-Type"), FString::Printf(TEXT("multipart/form-data; boundary=%s"), *Boundary));
+    Request->SetContent(Body);
+
+    Request->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnHttpResponseReceived);
+    if (!Request->ProcessRequest())
+    {
+        OnCompleted.Broadcast(false, TEXT("Failed to start HTTP request"), nullptr);
         OnAudioImported.Broadcast(nullptr);
     }
 }
@@ -138,7 +258,7 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
 {
     if (!bWasSuccessful || !Response.IsValid())
     {
-        OnCompleted.Broadcast(false, TEXT("HTTP request failed or no response"));
+        OnCompleted.Broadcast(false, TEXT("HTTP request failed or no response"), nullptr);
         OnAudioImported.Broadcast(nullptr);
         return;
     }
@@ -146,63 +266,102 @@ void UDuyguDoProccess::OnHttpResponseReceived(FHttpRequestPtr Request, FHttpResp
     int32 Code = Response->GetResponseCode();
     FString ResponseBody = Response->GetContentAsString();
 
-    if (Code >= 200 && Code < 300)
+    if (Code < 200 || Code >= 300)
     {
-        // Return the raw JSON string as the message so Blueprints can parse it
-        OnCompleted.Broadcast(true, ResponseBody);
+        OnCompleted.Broadcast(false, FString::Printf(TEXT("HTTP error %d: %s"), Code, *ResponseBody), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
 
-        // Try to parse JSON and download audio_url if present. If none present, notify audio delegate with nullptr.
-        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseBody);
-        TSharedPtr<FJsonObject> JsonObj;
-        bool bDispatchedAudio = false;
-        if (FJsonSerializer::Deserialize(Reader, JsonObj) && JsonObj.IsValid() && JsonObj->HasField(TEXT("audio_url")))
+    // Parse JSON response
+    TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseBody);
+    TSharedPtr<FJsonObject> JsonObj;
+    
+    if (!FJsonSerializer::Deserialize(Reader, JsonObj) || !JsonObj.IsValid())
+    {
+        OnCompleted.Broadcast(false, TEXT("Failed to parse server response"), nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Check if request was successful
+    bool bSuccess = JsonObj->GetBoolField(TEXT("success"));
+    if (!bSuccess)
+    {
+        FString ErrorMsg = JsonObj->HasField(TEXT("error")) 
+            ? JsonObj->GetStringField(TEXT("error")) 
+            : TEXT("Server processing failed");
+        OnCompleted.Broadcast(false, ErrorMsg, nullptr);
+        OnAudioImported.Broadcast(nullptr);
+        return;
+    }
+
+    // Get response text (user_text and assistant_response)
+    FString UserText = JsonObj->HasField(TEXT("user_text")) 
+        ? JsonObj->GetStringField(TEXT("user_text")) 
+        : TEXT("");
+    FString AssistantResponse = JsonObj->HasField(TEXT("assistant_response")) 
+        ? JsonObj->GetStringField(TEXT("assistant_response")) 
+        : TEXT("");
+
+    // Create a combined message for blueprint
+    FString CombinedMessage = FString::Printf(
+        TEXT("User: %s\nAssistant: %s"), 
+        *UserText, 
+        *AssistantResponse
+    );
+
+    // Store the message for broadcasting later with the sound
+    PendingResponseMessage = CombinedMessage;
+
+    // Try to download audio_url if present
+    bool bDispatchedAudio = false;
+    if (JsonObj->HasField(TEXT("audio_url")))
+    {
+        FString AudioUrl = JsonObj->GetStringField(TEXT("audio_url"));
+        if (!AudioUrl.IsEmpty())
         {
-            FString AudioUrl = JsonObj->GetStringField(TEXT("audio_url"));
-            if (!AudioUrl.IsEmpty())
+            // Resolve relative URL (e.g., "/download/response_123456.wav")
+            FString FullUrl = AudioUrl;
+            if (AudioUrl.StartsWith(TEXT("/")))
             {
-                // Resolve relative URL
-                FString FullUrl = AudioUrl;
-                if (AudioUrl.StartsWith(TEXT("/")))
+                // Extract base URL (scheme + host + port) from ServerUrl
+                FString Scheme, Rest;
+                if (ServerUrl.Split(TEXT("://"), &Scheme, &Rest))
                 {
-                    // Extract scheme+host+port from server URL
-                    FString Scheme, Host, Path;
-                    if (ServerUrl.Split(TEXT("://"), &Scheme, &Path))
+                    // Find the first '/' after host:port to separate base from path
+                    int32 PathStartIndex;
+                    if (Rest.FindChar(TEXT('/'), PathStartIndex))
                     {
-                        if (Path.Split(TEXT("/"), &Host, nullptr))
-                        {
-                            int32 SlashIndex;
-                            if (Host.FindChar(TEXT('/'), SlashIndex))
-                            {
-                                Host = Host.Left(SlashIndex);
-                            }
-                        }
-                        FString Base = Scheme + TEXT("://") + Host;
-                        FullUrl = Base + AudioUrl;
+                        // Has a path component, extract just host:port
+                        FString HostPort = Rest.Left(PathStartIndex);
+                        FullUrl = Scheme + TEXT("://") + HostPort + AudioUrl;
+                    }
+                    else
+                    {
+                        // No path component, entire Rest is host:port
+                        FullUrl = Scheme + TEXT("://") + Rest + AudioUrl;
                     }
                 }
+            }
 
-                // Download the audio file
-                TSharedRef<IHttpRequest, ESPMode::ThreadSafe> AudioRequest = FHttpModule::Get().CreateRequest();
-                AudioRequest->SetURL(FullUrl);
-                AudioRequest->SetVerb(TEXT("GET"));
-                AudioRequest->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnAudioDownloaded);
-                if (AudioRequest->ProcessRequest())
-                {
-                    bDispatchedAudio = true;
-                }
+            // Download the audio file
+            TSharedRef<IHttpRequest, ESPMode::ThreadSafe> AudioRequest = FHttpModule::Get().CreateRequest();
+            AudioRequest->SetURL(FullUrl);
+            AudioRequest->SetVerb(TEXT("GET"));
+            AudioRequest->OnProcessRequestComplete().BindUObject(this, &UDuyguDoProccess::OnAudioDownloaded);
+            if (AudioRequest->ProcessRequest())
+            {
+                bDispatchedAudio = true;
             }
         }
-
-        if (!bDispatchedAudio)
-        {
-            // No audio to download; notify listeners with nullptr so proxy can finish lifecycle.
-            ImportedSound = nullptr;
-            OnAudioImported.Broadcast(nullptr);
-        }
     }
-    else
+
+    if (!bDispatchedAudio)
     {
-        OnCompleted.Broadcast(false, FString::Printf(TEXT("Server returned %d: %s"), Code, *ResponseBody));
+        // No audio to download; notify listeners with nullptr
+        ImportedSound = nullptr;
+        OnCompleted.Broadcast(false, TEXT("No audio URL in server response"), nullptr);
         OnAudioImported.Broadcast(nullptr);
     }
 }
@@ -281,13 +440,43 @@ void UDuyguDoProccess::OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponseP
                 SW->SetSampleRate(SampleRate);
                 SW->NumChannels = NumChannels;
                 SW->bLooping = false;
+                
+                // Calculate and set duration
+                float CalculatedDuration = (float)DataSize / (SampleRate * NumChannels * (BitsPerSample / 8.0f));
+                SW->Duration = CalculatedDuration;
+                
+                // Store PCM data size for later reference
+                SW->RawPCMDataSize = DataSize;
+                
+                // Allocate and copy RawPCMData for VirtualAudioOutput compatibility
+                SW->RawPCMData = static_cast<uint8*>(FMemory::Malloc(DataSize));
+                if (SW->RawPCMData)
+                {
+                    FMemory::Memcpy(SW->RawPCMData, PCM.GetData(), DataSize);
+                }
+                
+                // Also queue audio for procedural playback
                 SW->QueueAudio(PCM.GetData(), PCM.Num());
+                
+                UE_LOG(LogTemp, Log, TEXT("DuyguDoProccess: Created SoundWave - Channels: %d, SampleRate: %d, Duration: %.2f, DataSize: %d"), 
+                    NumChannels, SampleRate, CalculatedDuration, DataSize);
             }
         }
     }
 
     // Store and broadcast imported audio (may be null if parse failed)
     ImportedSound = SW;
+    
+    // Broadcast completion with the sound
+    if (ImportedSound)
+    {
+        OnCompleted.Broadcast(true, PendingResponseMessage, ImportedSound);
+    }
+    else
+    {
+        OnCompleted.Broadcast(false, TEXT("Failed to create SoundWave from downloaded audio"), nullptr);
+    }
+    
     OnAudioImported.Broadcast(ImportedSound);
 }
 

@@ -26,6 +26,17 @@ UDuyguDoProccessAsync* UDuyguDoProccessAsync::DuyguDoProcessFromPCM(UObject* Wor
     return Proxy;
 }
 
+UDuyguDoProccessAsync* UDuyguDoProccessAsync::DuyguDoProcessFromSoundWave(UObject* WorldContextObject, USoundWave* InputSoundWave, const FString& ServerUrl)
+{
+    UDuyguDoProccessAsync* Proxy = NewObject<UDuyguDoProccessAsync>(WorldContextObject ? WorldContextObject : (UObject*)GetTransientPackage());
+    Proxy->WorldContextObject = WorldContextObject;
+    Proxy->AudioFilePath.Empty();
+    Proxy->ServerUrl = ServerUrl;
+    Proxy->PendingSoundWave = InputSoundWave;
+    Proxy->AddToRoot();
+    return Proxy;
+}
+
 void UDuyguDoProccessAsync::Activate()
 {
     InnerProcess = NewObject<UDuyguDoProccess>(this);
@@ -33,37 +44,55 @@ void UDuyguDoProccessAsync::Activate()
     {
         InnerProcess->OnCompleted.AddDynamic(this, &UDuyguDoProccessAsync::HandleCompleted);
         InnerProcess->OnAudioImported.AddDynamic(this, &UDuyguDoProccessAsync::HandleAudioImported);
-        if (PendingPCM.Num() > 0 && PendingSampleRate > 0 && PendingNumChannels > 0)
+        
+        if (PendingSoundWave)
         {
+            // Process from USoundWave
+            InnerProcess->StartProcessFromSoundWave(PendingSoundWave, ServerUrl);
+        }
+        else if (PendingPCM.Num() > 0 && PendingSampleRate > 0 && PendingNumChannels > 0)
+        {
+            // Process from PCM bytes
             InnerProcess->StartProcessFromPCM(PendingPCM, PendingSampleRate, PendingNumChannels, PendingBitsPerSample, ServerUrl);
         }
         else
         {
+            // Process from file path
             InnerProcess->StartProcess(AudioFilePath, ServerUrl);
         }
     }
     else
     {
-        HandleCompleted(false, TEXT("Failed to create inner process"));
+        HandleCompleted(false, TEXT("Failed to create inner process"), nullptr);
     }
 }
 
-void UDuyguDoProccessAsync::HandleCompleted(bool bSuccess, const FString& Message)
+void UDuyguDoProccessAsync::HandleCompleted(bool bSuccess, const FString& Message, USoundWave* ProcessedSound)
 {
+    // Store the sound
+    ImportedSound = ProcessedSound;
+    
     if (bSuccess)
     {
-        OnSuccess.Broadcast(bSuccess, Message);
+        // Success - broadcast with the sound
+        OnSuccess.Broadcast(bSuccess, Message, ProcessedSound);
     }
     else
     {
-        OnFailure.Broadcast(bSuccess, Message);
+        // Failure - broadcast with nullptr
+        OnFailure.Broadcast(bSuccess, Message, nullptr);
+        // Also trigger audio imported with nullptr and cleanup immediately
+        OnAudioImported.Broadcast(nullptr);
+        RemoveFromRoot();
     }
 }
 
-void UDuyguDoProccessAsync::HandleAudioImported(USoundWave* ImportedSound)
+void UDuyguDoProccessAsync::HandleAudioImported(USoundWave* InImportedSound)
 {
     // store so Blueprints can access
-    this->ImportedSound = ImportedSound;
+    ImportedSound = InImportedSound;
+    
+    // Broadcast the audio imported event
     OnAudioImported.Broadcast(ImportedSound);
 
     // complete lifecycle and allow GC
