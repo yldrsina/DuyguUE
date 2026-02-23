@@ -7,6 +7,7 @@
 #include "Sound/SoundWaveProcedural.h"
 #include "AudioDevice.h"
 #include "Engine/Engine.h"
+#include "Interfaces/IAudioFormat.h"
 
 // Windows Core Audio API includes
 #if PLATFORM_WINDOWS
@@ -279,7 +280,7 @@ bool UVirtualAudioOutput::PlayToVirtualDevice(USoundWave* SoundWave, float Volum
 	int32 NumChannels = SoundWave->NumChannels;
 	
 	UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: SoundWave Info - Duration: %.2f, Channels: %d, SampleRate: %d, RawPCMDataSize: %d"), 
-		SoundWave->Duration, NumChannels, SampleRate, SoundWave->RawPCMDataSize);
+		SoundWave->Duration, NumChannels, SampleRate, (int32)SoundWave->RawPCMDataSize);
 	
 	// Try to get PCM data - first check if RawPCMData is available
 	const uint8* PCMData = SoundWave->RawPCMData;
@@ -435,14 +436,24 @@ bool UVirtualAudioOutput::PlayToVirtualDevice(USoundWave* SoundWave, float Volum
 			int16 SourceSample = 0;
 			if (SourceChannels == 1)
 			{
-				SourceSample = *reinterpret_cast<const int16*>(&PCMData[SourceIndex * 2]);
+				// Check bounds for mono (2 bytes per sample)
+				int32 ByteOffset = SourceIndex * 2;
+				if (ByteOffset + 2 <= PCMDataSize)
+				{
+					SourceSample = *reinterpret_cast<const int16*>(&PCMData[ByteOffset]);
+				}
 			}
 			else
 			{
-				// Average channels if source is stereo
-				int16 L = *reinterpret_cast<const int16*>(&PCMData[SourceIndex * 4]);
-				int16 R = *reinterpret_cast<const int16*>(&PCMData[SourceIndex * 4 + 2]);
-				SourceSample = (L + R) / 2;
+				// Check bounds for stereo (4 bytes for L+R)
+				int32 ByteOffset = SourceIndex * 4;
+				if (ByteOffset + 4 <= PCMDataSize)
+				{
+					// Average channels if source is stereo
+					int16 L = *reinterpret_cast<const int16*>(&PCMData[ByteOffset]);
+					int16 R = *reinterpret_cast<const int16*>(&PCMData[ByteOffset + 2]);
+					SourceSample = (L + R) / 2;
+				}
 			}
 			
 			// Write to target format with volume applied
@@ -671,6 +682,39 @@ bool UVirtualAudioOutput::ExtractPCMData(USoundWave* SoundWave, TArray<uint8>& O
 		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Extracted %d bytes after loading"), OutPCMData.Num());
 		return true;
 	}
+	
+	// Try to decompress using audio device
+	FAudioDevice* AudioDevice = GEngine ? GEngine->GetMainAudioDeviceRaw() : nullptr;
+	if (AudioDevice)
+	{
+		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Initializing audio resource to decompress..."));
+		
+		// Initialize audio resources to decompress
+		SoundWave->InitAudioResource(SoundWave->GetRuntimeFormat());
+		
+		// Try again after initialization
+		if (SoundWave->RawPCMData && SoundWave->RawPCMDataSize > 0)
+		{
+			OutPCMData.Append(static_cast<const uint8*>(SoundWave->RawPCMData), SoundWave->RawPCMDataSize);
+			UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Successfully decompressed %d bytes"), OutPCMData.Num());
+			return true;
+		}
+		
+		// Force precache the sound on the audio device
+		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Attempting to precache sound..."));
+		AudioDevice->Precache(SoundWave, true, true);
+		
+		// Wait a bit for async decompression
+		FPlatformProcess::Sleep(0.1f);
+		
+		// Try one more time after precache
+		if (SoundWave->RawPCMData && SoundWave->RawPCMDataSize > 0)
+		{
+			OutPCMData.Append(static_cast<const uint8*>(SoundWave->RawPCMData), SoundWave->RawPCMDataSize);
+			UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Successfully extracted %d bytes after precache"), OutPCMData.Num());
+			return true;
+		}
+	}
 
 	// Try accessing compressed data directly
 	// Common formats: OGG, OPUS, ADPCM
@@ -680,7 +724,7 @@ bool UVirtualAudioOutput::ExtractPCMData(USoundWave* SoundWave, TArray<uint8>& O
 	
 	if (SoundWave->HasCompressedData(OGGFormat) || SoundWave->HasCompressedData(OpusFormat) || SoundWave->HasCompressedData(ADPCMFormat))
 	{
-		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Has compressed data, creating decompressed buffer..."));
+		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Has compressed data, attempting manual decompression..."));
 		
 		// Calculate expected size
 		int32 SampleRate = SoundWave->GetSampleRateForCurrentPlatform();
@@ -692,17 +736,38 @@ bool UVirtualAudioOutput::ExtractPCMData(USoundWave* SoundWave, TArray<uint8>& O
 		UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Expected size: %d bytes (Duration: %.2f, SR: %d, Channels: %d)"), 
 			ExpectedSize, Duration, SampleRate, NumChannels);
 		
-		// Pre-allocate the buffer
-		OutPCMData.SetNumUninitialized(ExpectedSize);
+		// Try to get imported sound wave data (Editor only, but worth trying)
+#if WITH_EDITORONLY_DATA
+		TArray<uint8> ImportedData;
+		uint32 ImportedSampleRate = 0;
+		uint16 ImportedChannels = 0;
 		
-		// You may need to implement custom decompression here
-		// For now, return false and log that manual decompression is needed
-		OutPCMData.Empty();
+		if (SoundWave->GetImportedSoundWaveData(ImportedData, ImportedSampleRate, ImportedChannels))
+		{
+			OutPCMData = MoveTemp(ImportedData);
+			UE_LOG(LogTemp, Log, TEXT("VirtualAudioOutput: Successfully extracted %d bytes using GetImportedSoundWaveData"), OutPCMData.Num());
+			return true;
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("VirtualAudioOutput: GetImportedSoundWaveData failed or returned no data"));
+		}
+#endif
 	}
 
-	UE_LOG(LogTemp, Error, TEXT("VirtualAudioOutput: Failed to extract PCM data. SoundWave may need to be imported as uncompressed PCM."));
-	UE_LOG(LogTemp, Error, TEXT("  -> In Unreal Editor: Right-click sound asset -> Asset Actions -> Bulk Edit via Property Matrix"));
-	UE_LOG(LogTemp, Error, TEXT("  -> Set 'Loading Behavior' to 'Retain On Load' or use USoundWaveProcedural"));
+	UE_LOG(LogTemp, Error, TEXT("VirtualAudioOutput: ============ PCM EXTRACTION FAILED ============"));
+	UE_LOG(LogTemp, Error, TEXT("  Duration: %.2f sec, Channels: %d, SampleRate: %d"), SoundWave->Duration, (int32)SoundWave->NumChannels, (int32)SoundWave->GetSampleRateForCurrentPlatform());
+	UE_LOG(LogTemp, Error, TEXT("  RawPCMData: %s, RawPCMDataSize: %d"), SoundWave->RawPCMData ? TEXT("Valid") : TEXT("NULL"), (int32)SoundWave->RawPCMDataSize);
+	UE_LOG(LogTemp, Error, TEXT(""));
+	UE_LOG(LogTemp, Error, TEXT("  SOLUTIONS:"));
+	UE_LOG(LogTemp, Error, TEXT("  1. In Unreal Editor, select your sound asset"));
+	UE_LOG(LogTemp, Error, TEXT("  2. In Details panel, set:"));
+	UE_LOG(LogTemp, Error, TEXT("     - Loading Behavior Type: FORCE_INLINE or RETAIN_ON_LOAD"));
+	UE_LOG(LogTemp, Error, TEXT("     - Compression Quality: 100 (optional, for best quality)"));
+	UE_LOG(LogTemp, Error, TEXT("  3. Save asset and restart editor"));
+	UE_LOG(LogTemp, Error, TEXT("  4. Alternative: Use USoundWaveProcedural for runtime audio"));
+	UE_LOG(LogTemp, Error, TEXT("  5. Alternative: Use PreloadSoundWave helper before playback"));
+	UE_LOG(LogTemp, Error, TEXT("============================================="));
 	
 	return false;
 }

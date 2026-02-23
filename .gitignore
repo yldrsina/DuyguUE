@@ -1,11 +1,12 @@
 .vs/
+.vscode/
 Binaries/
 DerivedDataCache/
 Intermediate/
 Saved/
 .vsconfig
 
-
+*-workspace
 *.sln
 *.dll
 *.exe

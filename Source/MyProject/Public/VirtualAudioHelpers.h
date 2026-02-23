@@ -40,4 +40,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Virtual Audio")
 	static TArray<FString> GetAllAudioDevices();
+
+	/**
+	 * Preload and cache a SoundWave's PCM data before playback
+	 * Useful for compressed audio assets to ensure smooth playback
+	 * @param SoundWave - The sound to preload
+	 * @return True if PCM data was successfully cached
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Virtual Audio")
+	static bool PreloadSoundWave(USoundWave* SoundWave);
+
+	/**
+	 * Check if a SoundWave has cached PCM data ready for playback
+	 * @param SoundWave - The sound to check
+	 * @return True if RawPCMData is available
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Virtual Audio")
+	static bool IsSoundWaveReady(USoundWave* SoundWave);
 };
