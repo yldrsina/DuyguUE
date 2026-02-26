@@ -13,7 +13,6 @@
 #include "Sound/SoundWaveProcedural.h"
 
 UDuyguService::UDuyguService()
-	: VirtualAudioOutput(nullptr)
 {
 }
 
@@ -153,17 +152,7 @@ void UDuyguService::OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponsePtr 
 	ProcessResponse.ResponseAudio = SoundWave;
 	ProcessResponse.bSuccess = true;
 
-	// Play to virtual audio device if enabled
-	if (bUseVirtualAudioOutput && !VirtualAudioDeviceName.IsEmpty())
-	{
-		UVirtualAudioOutput* VirtualOutput = GetVirtualAudioOutput();
-		if (VirtualOutput)
-		{
-			VirtualOutput->SetTargetAudioDevice(VirtualAudioDeviceName);
-			VirtualOutput->PlayToVirtualDevice(SoundWave, 1.0f);
-			UE_LOG(LogTemp, Log, TEXT("DuyguService: Playing to virtual device: %s"), *VirtualAudioDeviceName);
-		}
-	}
+	// (Virtual audio output removed)
 
 	UE_LOG(LogTemp, Log, TEXT("DuyguService: Process complete"));
 	OnProcessComplete.Broadcast(ProcessResponse);
@@ -307,21 +296,4 @@ FString UDuyguService::CreateMultipartFormData(const TArray<uint8>& AudioData, c
 	return MultipartData;
 }
 
-UVirtualAudioOutput* UDuyguService::GetVirtualAudioOutput()
-{
-	if (!VirtualAudioOutput)
-	{
-		VirtualAudioOutput = NewObject<UVirtualAudioOutput>(this);
-	}
-	return VirtualAudioOutput;
-}
-
-TArray<FString> UDuyguService::GetAvailableAudioDevices()
-{
-	UVirtualAudioOutput* VirtualOutput = GetVirtualAudioOutput();
-	if (VirtualOutput)
-	{
-		return VirtualOutput->GetAvailableAudioDevices();
-	}
-	return TArray<FString>();
-}
+// Virtual audio helpers removed.

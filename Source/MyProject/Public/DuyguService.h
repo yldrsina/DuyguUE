@@ -5,7 +5,6 @@
 #include "CoreMinimal.h"
 #include "Http.h"
 #include "Sound/SoundWave.h"
-#include "VirtualAudioOutput.h"
 #include "DuyguService.generated.h"
 
 USTRUCT(BlueprintType)
@@ -98,33 +97,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duygu Service")
 	FString ServiceURL = TEXT("http://localhost:5003");
 
-	/**
-	 * Enable virtual audio output (routes to VB-Audio Cable or other device)
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duygu Service")
-	bool bUseVirtualAudioOutput = false;
-
-	/**
-	 * Target virtual audio device name (e.g., "CABLE Input (VB-Audio Virtual Cable)")
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Duygu Service")
-	FString VirtualAudioDeviceName = TEXT("CABLE Input (VB-Audio Virtual Cable)");
-
-	/**
-	 * Get or create virtual audio output instance
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Duygu Service")
-	UVirtualAudioOutput* GetVirtualAudioOutput();
-
-	/**
-	 * List available audio output devices
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Duygu Service")
-	TArray<FString> GetAvailableAudioDevices();
-
 private:
-	UPROPERTY()
-	UVirtualAudioOutput* VirtualAudioOutput;
 	void OnProcessResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void OnAudioDownloaded(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful, FAgentProcessResponse ProcessResponse);
 	void OnHealthCheckReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);

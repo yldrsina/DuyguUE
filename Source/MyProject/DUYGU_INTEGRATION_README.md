@@ -146,3 +146,34 @@ Source/MyProject/
 ## İletişim ve Destek
 
 Sorunlarınız için projenizin issue tracker'ını kullanabilirsiniz.
+
+**Multi-Device Ses Çıkışı (Blueprint Kullanımı)**
+
+- **Amaç**: `MultiAudioOutput` sınıfı, Windows üzerinde birden fazla ses çıkış cihazına aynı anda ses oynatma yeteneği sağlar. Bu özellik sayesinde örneğin sistem hoparlörüne ve bir sanal kabloya aynı anda farklı sesler gönderebilirsiniz.
+- **Platform**: Yalnızca Windows (WASAPI kullanır).
+- **Dosya**: Sınıf tanımı ve implementasyonu için bakınız: [Source/MyProject/Public/MultiAudioOutput.h](Source/MyProject/Public/MultiAudioOutput.h) ve [Source/MyProject/Private/MultiAudioOutput.cpp](Source/MyProject/Private/MultiAudioOutput.cpp)
+
+- **Cihaz Listeleme**: `GetAvailableAudioDevices()` çağrısı size `TArray<FString>` döndürür. Blueprint'te bu sonucu `ForEachLoop` ile gezip kullanıcıya sunabilirsiniz.
+- **Cihaz Seçimi & Çalma**: Seçilen cihaz adına aşağıdaki node ile ses gönderin:
+  - `PlaySoundOnDevice(SoundWave, DeviceName, Volume)` — `SoundWave`: çalınacak `USoundWave`, `DeviceName`: listeden seçilen cihaz ismi.
+- **Birden Fazla Cihazta Aynı Anda Çalma**: Blueprint içinde iki ayrı `MultiAudioOutput` örneği oluşturun (örn. iki adet "Construct Object from Class" veya iki farklı variable). Her örnek için farklı `DeviceName` verip `PlaySoundOnDevice` çağırırsanız aynı anda iki farklı cihaza ses gönderebilirsiniz.
+
+- **Durdurma**: O anki instance'ı durdurmak için `StopAll()` node'unu çağırın.
+
+- **Örnek Event Graph Akışı (Adım Adım)**
+  - Oyun başladığında veya kullanıcı butona bastığında:
+    1. `GetAvailableAudioDevices()` çağır.
+    2. Dönen listeyi (`Array`) kullanıcıya göster (ör. Widget içinde Dropdown).
+    3. Kullanıcı iki cihaz seçerse: `Construct Object from Class` → `MultiAudioOutput` (örnek A) ve tekrar `MultiAudioOutput` (örnek B).
+    4. Örnek A için: `PlaySoundOnDevice(SoundWaveA, ChosenDeviceA, 1.0)`.
+    5. Örnek B için: `PlaySoundOnDevice(SoundWaveB, ChosenDeviceB, 1.0)`.
+    6. Durdurmak için: ilgili örneğe `StopAll()` çağır.
+
+- **Notlar & Kısıtlar**:
+  - `USoundWave` içinde ham PCM verisi (`RawPCMData` ve `RawPCMDataSize`) bulunmalıdır. Editor'da import edilmiş sıkıştırılmış asset'ler doğrudan çalışmayabilir. Sunucudan gelen WAV -> `USoundWave` oluşturma zinciri (`RawPCMData` doldurma) örnek projede mevcuttur.
+  - `PlaySoundOnDevice` çağrısı oyun iş parçacığını bloke etmez; arka planda oynatma için asenkron iş kullanır. Ancak cihaz sürücüsü ve format uyuşmazlıkları runtime hatalarına neden olabilir.
+  - Ses formatı (sample rate, kanal sayısı, bit depth) hedef cihazın desteklediği formatla uyumlu olmalıdır. Gerekirse veriyi dönüştürün veya proje içinde ortak bir format kullanın (ör. 16-bit PCM, 44100 Hz, stereo).
+
+- **Hızlı Örnek (Blueprint özet)**
+  - Event BeginPlay → `GetAvailableAudioDevices()` → Kullanıcı seçimi → `Construct Object from Class (MultiAudioOutput)` → `PlaySoundOnDevice`
+
