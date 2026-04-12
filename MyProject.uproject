@@ -14,10 +14,7 @@
 		}
 	],
 	"Plugins": [
-		{
-			"Name": "OpenXR",
-			"Enabled": false
-		},
+		
 		{
 			"Name": "OpenXREyeTracker",
 			"Enabled": true
@@ -43,26 +40,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "NV_ACE_Reference",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
-			"Name": "NvAudio2FaceClaire",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
-			"Name": "NvAudio2FaceJames",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
-			"Name": "NvAudio2FaceMark",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
 			"Name": "RigLogic",
 			"Enabled": true
 		},
@@ -86,21 +63,6 @@
 			"Enabled": true
 		},
 		{
-			"Name": "NvAudio2FaceClaireRegressive",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
-			"Name": "NvAudio2FaceJamesRegressive",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
-			"Name": "NvAudio2FaceMarkRegressive",
-			"Enabled": false,
-			"MarketplaceURL": "https://www.unrealengine.com/marketplace/en-US/product/ace-unreal-engine-plugin"
-		},
-		{
 			"Name": "MetaHuman",
 			"Enabled": true,
 			"SupportedTargetPlatforms": [
@@ -117,30 +79,8 @@
 			]
 		},
 		{
-			"Name": "MetaHumanCharacter",
-			"Enabled": true
-		},
-		{
 			"Name": "MetaHumanLiveLink",
 			"Enabled": true
-		},
-		{
-			"Name": "OculusInteraction",
-			"Enabled": false,
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/2372b714e0aa46ab85168aaf035e099a",
-			"SupportedTargetPlatforms": [
-				"Win64",
-				"Android"
-			]
-		},
-		{
-			"Name": "OculusXR",
-			"Enabled": false,
-			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/product/8313d8d7e7cf4e03a33e79eb757bccba",
-			"SupportedTargetPlatforms": [
-				"Win64",
-				"Android"
-			]
 		}
 	],
 	"TargetPlatforms": [

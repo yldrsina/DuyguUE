@@ -9,7 +9,8 @@ public class MyProjectTarget : TargetRules
 	{
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.V5;
-
+		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
+		UndefinedIdentifierWarningLevel = WarningLevel.Error;
 		ExtraModuleNames.AddRange( new string[] { "MyProject" } );
 	}
 }

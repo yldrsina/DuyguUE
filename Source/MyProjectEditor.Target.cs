@@ -10,7 +10,7 @@ public class MyProjectEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V6;
         IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
-
+		UndefinedIdentifierWarningLevel = WarningLevel.Error;
         ExtraModuleNames.AddRange( new string[] { "MyProject" } );
 	}
 }
